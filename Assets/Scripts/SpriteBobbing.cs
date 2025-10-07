@@ -1,36 +1,16 @@
-﻿using UnityEngine;
+using UnityEngine;
 
-public class BobbingAny : MonoBehaviour
+public class SpriteBobbing : MonoBehaviour
 {
-    public float amplitude = 8f;          // UI: tính theo pixel; Non-UI: theo world units
-    public float frequency = 1.5f;        // chu kỳ lắc
-    public bool useUnscaledTime = false;  // bật nếu có pause (timeScale=0)
+    public float amplitude = 0.1f;
+    public float frequency = 1f;
+    private Vector3 startPos;
 
-    Vector3 startLocalPos;
-    RectTransform rect;
-    Vector2 startAnchoredPos;
-
-    void Awake()
-    {
-        rect = GetComponent<RectTransform>();
-        if (rect != null)
-        {
-            startAnchoredPos = rect.anchoredPosition;
-        }
-        else
-        {
-            startLocalPos = transform.localPosition;
-        }
-    }
+    void Start() => startPos = transform.localPosition;
 
     void Update()
     {
-        float t = useUnscaledTime ? Time.unscaledTime : Time.time;
-        float y = Mathf.Sin(t * frequency) * amplitude;
-
-        if (rect != null)
-            rect.anchoredPosition = startAnchoredPos + new Vector2(0f, y);
-        else
-            transform.localPosition = startLocalPos + new Vector3(0f, y, 0f);
+        float y = Mathf.Sin(Time.time * frequency) * amplitude;
+        transform.localPosition = startPos + new Vector3(0, y, 0);
     }
 }
