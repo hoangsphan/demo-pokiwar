@@ -1,35 +1,68 @@
-﻿using UnityEngine;
+using UnityEngine;
 
 public class PokemonDisplayManager : MonoBehaviour
 {
-    [Header("Sprites")]
+    [Header("Prefabs")]
+    [Tooltip("Prefab của Player Pet (chứa PetData, SpriteRenderer, SimpleBobbing)")]
+    public GameObject playerPetPrefab;
+    [Tooltip("Prefab của Enemy Pet (chứa PetData, SpriteRenderer, SimpleBobbing)")]
+    public GameObject enemyPetPrefab;
+
+    [Header("Background")]
     public Sprite backgroundSprite;
-    public Sprite playerSprite;
-    public Sprite enemySprite;
 
-    [Header("Positions (world)")]
-    [Tooltip("Vị trí mặc định PlayerChar (-4.1, 2.09, 0)")]
+    [Header("Vị trí (world)")]
     public Vector3 playerPos = new Vector3(-4.1f, 2.09f, 0f);
-
-    [Tooltip("Vị trí mặc định EnemyChar (9.66, 1.89, 0)")]
     public Vector3 enemyPos = new Vector3(9.66f, 1.89f, 0f);
 
-    [Header("Scale & Flip")]
-    public float characterScale = 1.0f;
+    [Header("Tùy chỉnh hình ảnh")]
     public bool flipEnemy = true;
+    public float characterScale = 1.0f;
 
-    [Header("Bobbing Animation")]
-    public float bobAmplitude = 0.08f;  // Biên độ dao động
-    public float bobFrequency = 1.5f;   // Tốc độ dao động
-    public bool desyncBobbing = true;   // Lệch pha giữa 2 nhân vật
+    [Header("Tham chiếu")]
+    [Tooltip("Kéo BattleManager trong Scene vào đây")]
+    [SerializeField] private BattleManager battleManager;
+
+    // Biến để lưu trữ pet đã được tạo ra
+    private GameObject playerInstance;
+    private GameObject enemyInstance;
 
     void Start()
     {
+        if (!battleManager)
+        {
+            Debug.LogError("[PokemonDisplayManager] Chưa gán BattleManager!");
+            battleManager = FindFirstObjectByType<BattleManager>();
+        }
+
         SetupBackground();
-        SetupCharacter(true);   // player
-        SetupCharacter(false);  // enemy
+        playerInstance = SetupCharacter(true);   // player
+        enemyInstance = SetupCharacter(false);  // enemy
+
+        // Tự động gán target VÀ PetData cho BattleManager
+        if (battleManager)
+        {
+            // Gán Transform cho projectile bay
+            battleManager.playerTarget = playerInstance.transform;
+            battleManager.enemyTarget = enemyInstance.transform;
+
+            // GÁN PET DATA (Quan trọng)
+            battleManager.playerPet = playerInstance.GetComponent<PetData>();
+            battleManager.enemyPet = enemyInstance.GetComponent<PetData>();
+
+            // Kiểm tra lỗi
+            if (battleManager.playerPet == null || battleManager.enemyPet == null)
+            {
+                Debug.LogError("[PokemonDisplayManager] Prefab pet thiếu component PetData!");
+            }
+            else
+            {
+                Debug.Log("Đã gán PetData và Target cho BattleManager.");
+            }
+        }
     }
 
+    // Hàm này giữ nguyên từ file cũ của bạn
     void SetupBackground()
     {
         if (!backgroundSprite) return;
@@ -38,53 +71,44 @@ public class PokemonDisplayManager : MonoBehaviour
         var sr = go.AddComponent<SpriteRenderer>();
         sr.sprite = backgroundSprite;
 
-        // Giữ đúng giá trị bạn đã set tay
         go.transform.position = new Vector3(2.6284f, 2.5977f, 10f);
         go.transform.rotation = Quaternion.Euler(0f, 0f, 0f);
         go.transform.localScale = new Vector3(2.1408f, 1.962382f, 0.711111f);
     }
 
-    void SetupCharacter(bool isPlayer)
+    /// <summary>
+    /// Hàm này giờ sẽ Instantiate Prefab
+    /// </summary>
+    GameObject SetupCharacter(bool isPlayer)
     {
-        Sprite sp = isPlayer ? playerSprite : enemySprite;
-        if (!sp) return;
+        GameObject prefab = isPlayer ? playerPetPrefab : enemyPetPrefab;
+        if (!prefab)
+        {
+            Debug.LogError($"Chưa gán Prefab cho " + (isPlayer ? "Player" : "Enemy"));
+            return null;
+        }
 
-        var go = new GameObject(isPlayer ? "PlayerChar" : "EnemyChar");
-        var sr = go.AddComponent<SpriteRenderer>();
-        sr.sprite = sp;
+        Vector3 pos = isPlayer ? playerPos : enemyPos;
 
-        go.transform.localScale = Vector3.one * characterScale;
-        go.transform.position = isPlayer ? playerPos : enemyPos;
+        // 1. Instantiate (tạo) pet từ prefab
+        GameObject petGO = Instantiate(prefab, pos, Quaternion.identity, transform);
+        petGO.name = isPlayer ? "PlayerChar_Instance" : "EnemyChar_Instance";
 
-        if (!isPlayer && flipEnemy) sr.flipX = true;
+        // 2. Tùy chỉnh (ví dụ lật hình)
+        if (!isPlayer && flipEnemy)
+        {
+            if (petGO.TryGetComponent<SpriteRenderer>(out var sr))
+            {
+                sr.flipX = true;
+            }
+        }
 
-        // Thêm bobbing animation
-        var bob = go.AddComponent<SimpleBobbing>();
-        bob.amplitude = bobAmplitude;
-        bob.frequency = bobFrequency;
-        bob.phaseOffset = desyncBobbing ? Random.Range(0f, Mathf.PI * 2f) : 0f;
-    }
-}
+        // 3. Scale
+        petGO.transform.localScale = Vector3.one * characterScale;
 
-/// <summary>
-/// Component animation lên–xuống theo sin.
-/// </summary>
-public class SimpleBobbing : MonoBehaviour
-{
-    public float amplitude = 0.08f;
-    public float frequency = 1.5f;
-    public float phaseOffset = 0f;
-
-    private Vector3 _startPos;
-
-    void Awake()
-    {
-        _startPos = transform.position;
+        // 4. Trả về GameObject đã tạo
+        return petGO;
     }
 
-    void Update()
-    {
-        float dy = Mathf.Sin((Mathf.PI * 2f) * frequency * Time.time + phaseOffset) * amplitude;
-        transform.position = new Vector3(_startPos.x, _startPos.y + dy, _startPos.z);
-    }
+
 }
