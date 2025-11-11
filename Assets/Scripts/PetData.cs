@@ -15,11 +15,13 @@ public class PetData : MonoBehaviour
     /// </summary>
     public Actor GetActor()
     {
-        // Gán ID cho Actor dựa trên tên GameObject, 
-        // vì Actor.id mặc định là "Actor"
+        // SỬA LẠI LOGIC:
+        // Nếu ID trong Inspector là "Actor" hoặc rỗng
+        // -> tự động lấy tên của GameObject (tên prefab) làm ID
         if (combatStats.id == "Actor" || string.IsNullOrEmpty(combatStats.id))
         {
-            combatStats.id = this.gameObject.name;
+            // Xóa "(Clone)" nếu đây là một instance được tạo ra
+            combatStats.id = this.gameObject.name.Replace("(Clone)", "");
         }
         return combatStats;
     }
