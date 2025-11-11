@@ -89,7 +89,7 @@ public class AIController : MonoBehaviour
         {
             int type = kv.Key, cells = kv.Value;
             int groups = Mathf.CeilToInt(cells / 3f);
-            int baseVal = CombatSystem.GetBaseEffectFor((GemType)type);
+            int baseVal = CombatSystem.GetAIScoreValue((GemType)type);
             int val = baseVal * groups;
 
             if (type == (int)GemType.Yellow) score += val * 5;

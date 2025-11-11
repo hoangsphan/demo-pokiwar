@@ -8,6 +8,9 @@ public class Actor
     public int maxHP = 100, hp = 100;
     public int maxMana = 100, mana = 0;
     public int maxRage = 100, rage = 0;
+    [Header("Combat Stats")]
+    public int attack = 10;
+    public int defense = 5;
 
     public void Clamp()
     {
