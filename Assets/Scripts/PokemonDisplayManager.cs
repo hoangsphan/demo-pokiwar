@@ -1,11 +1,12 @@
-using UnityEngine;
+﻿using UnityEngine;
 
 public class PokemonDisplayManager : MonoBehaviour
 {
     [Header("Prefabs")]
-    [Tooltip("Prefab của Player Pet (chứa PetData, SpriteRenderer, SimpleBobbing)")]
+    [Tooltip("Prefab Player MẶC ĐỊNH (Dùng nếu chạy scene này trực tiếp không qua Lobby)")]
     public GameObject playerPetPrefab;
-    [Tooltip("Prefab của Enemy Pet (chứa PetData, SpriteRenderer, SimpleBobbing)")]
+
+    [Tooltip("Prefab của Enemy Pet MẶC ĐỊNH (Dùng nếu chạy scene này trực tiếp không qua Lobby)")]
     public GameObject enemyPetPrefab;
 
     [Header("Background")]
@@ -23,7 +24,6 @@ public class PokemonDisplayManager : MonoBehaviour
     [Tooltip("Kéo BattleManager trong Scene vào đây")]
     [SerializeField] private BattleManager battleManager;
 
-    // Biến để lưu trữ pet đã được tạo ra
     private GameObject playerInstance;
     private GameObject enemyInstance;
 
@@ -39,18 +39,14 @@ public class PokemonDisplayManager : MonoBehaviour
         playerInstance = SetupCharacter(true);   // player
         enemyInstance = SetupCharacter(false);  // enemy
 
-        // Tự động gán target VÀ PetData cho BattleManager
         if (battleManager)
         {
-            // Gán Transform cho projectile bay
             battleManager.playerTarget = playerInstance.transform;
             battleManager.enemyTarget = enemyInstance.transform;
 
-            // GÁN PET DATA (Quan trọng)
             battleManager.playerPet = playerInstance.GetComponent<PetData>();
             battleManager.enemyPet = enemyInstance.GetComponent<PetData>();
 
-            // Kiểm tra lỗi
             if (battleManager.playerPet == null || battleManager.enemyPet == null)
             {
                 Debug.LogError("[PokemonDisplayManager] Prefab pet thiếu component PetData!");
@@ -62,39 +58,74 @@ public class PokemonDisplayManager : MonoBehaviour
         }
     }
 
-    // Hàm này giữ nguyên từ file cũ của bạn
     void SetupBackground()
     {
         if (!backgroundSprite) return;
-
         var go = new GameObject("BG");
         var sr = go.AddComponent<SpriteRenderer>();
         sr.sprite = backgroundSprite;
-
         go.transform.position = new Vector3(2.6284f, 2.5977f, 10f);
         go.transform.rotation = Quaternion.Euler(0f, 0f, 0f);
         go.transform.localScale = new Vector3(2.1408f, 1.962382f, 0.711111f);
     }
 
-    /// <summary>
-    /// Hàm này giờ sẽ Instantiate Prefab
-    /// </summary>
+    // === TOÀN BỘ LOGIC HÀM NÀY ĐÃ ĐƯỢC SỬA ===
     GameObject SetupCharacter(bool isPlayer)
     {
-        GameObject prefab = isPlayer ? playerPetPrefab : enemyPetPrefab;
-        if (!prefab)
+        GameObject prefabToSpawn = null;
+        Vector3 pos;
+
+        if (isPlayer)
         {
-            Debug.LogError($"Chưa gán Prefab cho " + (isPlayer ? "Player" : "Enemy"));
+            pos = playerPos;
+
+            // 1. Thử lấy prefab từ LobbyManager (nếu đang chạy game đúng luồng)
+            if (LobbyManager.Instance != null && LobbyManager.Instance.selectedPetPrefab != null)
+            {
+                prefabToSpawn = LobbyManager.Instance.selectedPetPrefab;
+                Debug.Log("[PokemonDisplayManager] Đã tải Player Pet từ Lobby: " + prefabToSpawn.name);
+            }
+            // 2. Nếu không có Lobby (ví dụ: test scene trực tiếp)
+            else
+            {
+                Debug.LogWarning("[PokemonDisplayManager] Không tìm thấy LobbyManager.Instance hoặc selectedPetPrefab. Sử dụng prefab PLAYER MẶC ĐỊNH.");
+                prefabToSpawn = playerPetPrefab; // Dùng prefab dự phòng
+            }
+        }
+        else // Nếu là Enemy
+        {
+            pos = enemyPos;
+
+            // === BẮT ĐẦU SỬA ===
+            
+            // 1. Thử lấy prefab Enemy từ GameSession (thay vì LobbyManager)
+            if (GameSession.Instance != null && GameSession.Instance.selectedEnemyPrefab != null)
+            {
+                prefabToSpawn = GameSession.Instance.selectedEnemyPrefab;
+                Debug.Log("[PokemonDisplayManager] Đã tải Enemy Pet từ GameSession: " + prefabToSpawn.name);
+            }
+            else
+            {
+                Debug.LogWarning("[PokemonDisplayManager] Không tìm thấy GameSession.Instance hoặc selectedEnemyPrefab. Sử dụng prefab ENEMY MẶC ĐỊNH.");
+                prefabToSpawn = enemyPetPrefab; // Dùng prefab dự phòng
+            }
+            // === KẾT THÚC SỬA ===
+        }
+
+        // 3. Kiểm tra lần cuối trước khi tạo
+        if (prefabToSpawn == null)
+        {
+            Debug.LogError($"[PokemonDisplayManager] Prefab cho {(isPlayer ? "Player" : "Enemy")} bị null! Vui lòng kiểm tra (cả prefab dự phòng).");
             return null;
         }
 
-        Vector3 pos = isPlayer ? playerPos : enemyPos;
+        // 4. Instantiate (tạo) pet từ prefab đã chọn
+        GameObject petGO = Instantiate(prefabToSpawn, pos, Quaternion.identity, transform);
 
-        // 1. Instantiate (tạo) pet từ prefab
-        GameObject petGO = Instantiate(prefab, pos, Quaternion.identity, transform);
-        petGO.name = isPlayer ? "PlayerChar_Instance" : "EnemyChar_Instance";
+        // QUAN TRỌNG: Không đổi tên để giữ ID prefab
+        // petGO.name = isPlayer ? "PlayerChar_Instance" : "EnemyChar_Instance"; // <-- ĐÃ XÓA DÒNG NÀY
 
-        // 2. Tùy chỉnh (ví dụ lật hình)
+        // 5. Tùy chỉnh (ví dụ lật hình)
         if (!isPlayer && flipEnemy)
         {
             if (petGO.TryGetComponent<SpriteRenderer>(out var sr))
@@ -103,12 +134,10 @@ public class PokemonDisplayManager : MonoBehaviour
             }
         }
 
-        // 3. Scale
+        // 6. Scale
         petGO.transform.localScale = Vector3.one * characterScale;
 
-        // 4. Trả về GameObject đã tạo
+        // 7. Trả về GameObject đã tạo
         return petGO;
     }
-
-
 }
