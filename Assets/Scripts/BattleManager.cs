@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using static Gem;
@@ -9,12 +9,13 @@ public class BattleManager : MonoBehaviour
     [SerializeField] public Match3Manager board;
 
     [Header("Actors")]
-    // THAY THẾ: Không dùng "new Actor()" nữa
     [Tooltip("Sẽ được gán tự động bởi PokemonDisplayManager")]
     public PetData playerPet;
     [Tooltip("Sẽ được gán tự động bởi PokemonDisplayManager")]
     public PetData enemyPet;
-
+    [Header("Rewards")]
+    public int expReward = 50;
+    public int currencyReward = 20;
     [Header("Flow")]
     public bool enableAI = true;
     public bool isPlayerTurn = true;
@@ -25,10 +26,24 @@ public class BattleManager : MonoBehaviour
     public Transform enemyTarget; // Sẽ được gán tự động
     public float projectileFlyDuration = 0.5f;
 
+    [Header("Timer Settings")]
+    [Tooltip("Thời gian cho mỗi lượt (giây). 0 = không giới hạn")]
+    public float turnTimeLimit = 30f;
+    [Tooltip("Bật/tắt timer")]
+    public bool enableTimer = true;
+    [Tooltip("Thời gian cảnh báo còn ít (giây)")]
+    public float warningTime = 10f;
+
+    // ==== Timer Runtime ====
+    private float currentTurnTime;
+    private bool isTimerRunning = false;
     // Events
     public System.Action<string> OnCombatLog;
     public System.Action<Actor, Actor> OnStatsChanged;
     public System.Action<bool> OnTurnChanged;
+    public System.Action<float, float> OnTimerTick; // (currentTime, maxTime)
+    public System.Action OnTimerWarning;
+    public System.Action OnTimeUp;
 
     // Internal state
     private bool _endingTurn = false;
@@ -54,46 +69,72 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
-        // CHUYỂN LOGIC START QUA COROUTINE NÀY
-        // để chờ PokemonDisplayManager gán pet
         StartCoroutine(WaitForPetsAndStart());
+        StartTurnTimer();
     }
 
-    // Tách ra Coroutine để chờ pet được spawn
+    void Update()
+    {
+        if (isTimerRunning && enableTimer && turnTimeLimit > 0)
+        {
+            currentTurnTime -= Time.deltaTime;
+            OnTimerTick?.Invoke(currentTurnTime, turnTimeLimit);
+
+            if (currentTurnTime <= warningTime && currentTurnTime > warningTime - 0.1f)
+            {
+                OnTimerWarning?.Invoke();
+                OnCombatLog?.Invoke("⚠️ Warning: Time running out!");
+            }
+
+            if (currentTurnTime <= 0f)
+            {
+                OnTimeUp?.Invoke();
+                OnCombatLog?.Invoke($"⏰ {(isPlayerTurn ? "Player" : "Enemy")} ran out of time!");
+                StopTurnTimer();
+                StartCoroutine(ForceEndTurn());
+            }
+        }
+    }
+
+    void StartTurnTimer()
+    {
+        if (!enableTimer || turnTimeLimit <= 0) return;
+        currentTurnTime = turnTimeLimit;
+        isTimerRunning = true;
+    }
+
+    void StopTurnTimer()
+    {
+        isTimerRunning = false;
+    }
+
     IEnumerator WaitForPetsAndStart()
     {
-        // Chờ đến khi PetData được gán (bởi PokemonDisplayManager)
         while (playerPet == null || enemyPet == null)
         {
             Debug.LogWarning("[BattleManager] Đang chờ PokemonDisplayManager spawn pet...");
             yield return new WaitForSeconds(0.1f);
         }
 
-        // Clamp chỉ số ban đầu (lấy từ PetData)
-        ClampActor(playerPet.GetActor());
-        ClampActor(enemyPet.GetActor());
+        InitializeActor(playerPet.GetActor());
+        InitializeActor(enemyPet.GetActor());
 
-        // Bật/tắt input theo người đi trước
         board.SetPlayerInputEnabled(isPlayerTurn);
-
-        // Thông báo UI
         OnStatsChanged?.Invoke(playerPet.GetActor(), enemyPet.GetActor());
         OnTurnChanged?.Invoke(isPlayerTurn);
 
-        // Nếu AI đi trước → cho AI chơi
         if (enableAI && !isPlayerTurn)
             StartCoroutine(CallAI());
     }
 
-    // Hàm này giữ nguyên
     void HandleMatchesResolved(List<List<Gem>> matches)
     {
+        StopTurnTimer();
         if (matches == null || matches.Count == 0) return;
         _currentTurnMatches.AddRange(matches);
         StartCoroutine(WaitBoardAndEndTurn());
     }
 
-    // Hàm này SỬA LẠI ĐỂ DÙNG "playerPet.GetActor()"
     IEnumerator WaitBoardAndEndTurn()
     {
         if (_endingTurn) yield break;
@@ -114,21 +155,58 @@ public class BattleManager : MonoBehaviour
 
         yield return new WaitForSeconds(0.05f);
 
-        // SỬA Ở ĐÂY: Dùng "playerPet" và "enemyPet"
-        if (IsDead(playerPet.GetActor())) // << SỬA
+        if (IsDead(playerPet.GetActor()))
         {
             Debug.Log("PLAYER DIED");
+            OnCombatLog?.Invoke("❌ Bạn đã thua!");
+            StopTurnTimer();
+            // (NÊN HIỆN NÚT "VỀ LOBBY" TẠI ĐÂY)
+            // if (backToLobbyButton != null) backToLobbyButton.SetActive(true);
             yield break;
         }
-        if (IsDead(enemyPet.GetActor())) // << SỬA
+
+        // === SỬA KHỐI LỆNH KHI THẮNG ===
+        if (IsDead(enemyPet.GetActor()))
         {
             Debug.Log("ENEMY DIED");
+            OnCombatLog?.Invoke($"✅ Bạn thắng! +{expReward} EXP, +{currencyReward} Vàng");
+
+            // 1. Kiểm tra DatabaseManager
+            if (DatabaseManager.Instance != null && DatabaseManager.Instance.playerData != null)
+            {
+                var playerData = DatabaseManager.Instance.playerData;
+
+                // 2. Cộng thưởng
+                playerData.AddExp(expReward);
+                playerData.currency += currencyReward;
+
+                // 3. === THÊM MỚI: LƯU TIẾN TRÌNH ===
+                // Lấy ID của enemy VỪA BỊ HẠ (từ PetData -> GetActor -> id)
+                string defeatedEnemyID = enemyPet.GetActor().id;
+                // Gọi hàm mới trong PlayerData
+                playerData.AddDefeatedEnemy(defeatedEnemyID);
+                // =================================
+
+                // 4. Lưu data lại
+                DatabaseManager.Instance.SaveData();
+            }
+            else
+            {
+                Debug.LogError("[BattleManager] Không tìm thấy DatabaseManager để lưu thưởng!");
+            }
+
+            // (NÊN HIỆN NÚT "VỀ LOBBY" TẠI ĐÂY)
+            // if (backToLobbyButton != null) backToLobbyButton.SetActive(true);
+            StopTurnTimer();
             yield break;
         }
+        // === KẾT THÚC SỬA ===
+
 
         isPlayerTurn = !isPlayerTurn;
         OnTurnChanged?.Invoke(isPlayerTurn);
         board.SetPlayerInputEnabled(isPlayerTurn);
+        StartTurnTimer();
 
         if (enableAI && !isPlayerTurn)
             yield return CallAI();
@@ -136,19 +214,17 @@ public class BattleManager : MonoBehaviour
         _endingTurn = false;
     }
 
-    // Hàm này SỬA LẠI ĐỂ DÙNG "playerPet.GetActor()"
     IEnumerator AnimateCombatEffects(List<List<Gem>> allMatches)
     {
-        // SỬA Ở ĐÂY:
-        var attacker = isPlayerTurn ? playerPet.GetActor() : enemyPet.GetActor(); // << SỬA
-        var defender = isPlayerTurn ? enemyPet.GetActor() : playerPet.GetActor(); // << SỬA
+        var attacker = isPlayerTurn ? playerPet.GetActor() : enemyPet.GetActor();
+        var defender = isPlayerTurn ? enemyPet.GetActor() : playerPet.GetActor();
 
         var attackerTransform = isPlayerTurn ? playerTarget : enemyTarget;
         var defenderTransform = isPlayerTurn ? enemyTarget : playerTarget;
 
         if (playerTarget == null || enemyTarget == null)
         {
-            Debug.LogError("[BattleManager] Chưa gán PlayerTarget hoặc EnemyTarget! (Lỗi này do PokemonDisplayManager)");
+            Debug.LogError("[BattleManager] Chưa gán PlayerTarget hoặc EnemyTarget!");
             _currentTurnMatches.Clear();
             yield break;
         }
@@ -157,10 +233,9 @@ public class BattleManager : MonoBehaviour
         {
             if (group == null || group.Count == 0) continue;
 
-            var fx = CombatSystem.ComputeEffects(new List<List<Gem>> { group });
+            var fx = CombatSystem.ComputeEffects(new List<List<Gem>> { group }, attacker);
             if (fx.IsEmpty) continue;
 
-            // ... (Code lấy prefab và xác định mục tiêu giữ nguyên) ...
             GemType type = group[0].gemType;
             int typeIndex = (int)type;
             GameObject prefabToSpawn = null;
@@ -175,7 +250,7 @@ public class BattleManager : MonoBehaviour
             {
                 Transform startPoint = attackerTransform;
                 Transform endPoint;
-                if (fx.damage > 0) endPoint = defenderTransform;
+                if (fx.rawDamagePower > 0) endPoint = defenderTransform;
                 else endPoint = attackerTransform;
 
                 yield return StartCoroutine(SpawnAndFlyProjectile(
@@ -186,25 +261,28 @@ public class BattleManager : MonoBehaviour
                 ));
             }
 
-            // 4. ÁP DỤNG HIỆU ỨNG (Không cần sửa, vì attacker/defender đã đúng)
             OnCombatLog?.Invoke($"🎬 Xử lý match {type} ({group.Count} viên)");
             CombatSystem.ApplyEffects(fx, attacker, defender, OnCombatLog);
 
-            // Cập nhật chỉ số ngay
-            // SỬA Ở ĐÂY:
-            ClampActor(playerPet.GetActor()); // << SỬA
-            ClampActor(enemyPet.GetActor()); // << SỬA
-            OnStatsChanged?.Invoke(playerPet.GetActor(), enemyPet.GetActor()); // << SỬA
+            ClampActor(playerPet.GetActor());
+            ClampActor(enemyPet.GetActor());
+            OnStatsChanged?.Invoke(playerPet.GetActor(), enemyPet.GetActor());
 
             yield return new WaitForSeconds(0.15f);
         }
         yield return new WaitForSeconds(0.3f);
     }
 
-    // Các hàm còn lại giữ nguyên
+    void InitializeActor(Actor a)
+    {
+        if (a == null) return;
+        a.hp = a.maxHP;
+        a.mana = 0;
+        a.rage = 0;
+        ClampActor(a);
+    }
     IEnumerator SpawnAndFlyProjectile(GameObject prefab, Vector3 startPos, Vector3 endPos, float duration)
     {
-        // ... (Giữ nguyên code của bạn) ...
         GameObject proj = Instantiate(prefab, startPos, Quaternion.identity);
         if (Vector3.Distance(startPos, endPos) < 0.01f)
         {
@@ -227,7 +305,6 @@ public class BattleManager : MonoBehaviour
 
     IEnumerator CallAI()
     {
-        // ... (Giữ nguyên code của bạn) ...
         yield return new WaitForSeconds(0.25f);
         var ai = FindFirstObjectByType<AIController>();
         if (ai == null)
@@ -238,9 +315,49 @@ public class BattleManager : MonoBehaviour
         ai.PlayTurn();
     }
 
+    IEnumerator ForceEndTurn()
+    {
+        if (_endingTurn) yield break;
+        _endingTurn = true;
+
+        while (board != null && !board.IsGridReady())
+            yield return null;
+
+        yield return new WaitForSeconds(0.05f);
+
+        if (IsDead(playerPet.GetActor()))
+        {
+            OnCombatLog?.Invoke("❌ Player defeated!");
+            board.SetPlayerInputEnabled(false);
+            _endingTurn = false;
+            // (NÊN HIỆN NÚT "VỀ LOBBY" TẠI ĐÂY)
+            // if (backToLobbyButton != null) backToLobbyButton.SetActive(true);
+            yield break;
+        }
+        if (IsDead(enemyPet.GetActor()))
+        {
+            OnCombatLog?.Invoke("✅ Enemy defeated!");
+            board.SetPlayerInputEnabled(false);
+            _endingTurn = false;
+            // (Không lưu thưởng khi hết giờ, chỉ khi thắng)
+            // (NÊN HIỆN NÚT "VỀ LOBBY" TẠI ĐÂY)
+            // if (backToLobbyButton != null) backToLobbyButton.SetActive(true);
+            yield break;
+        }
+
+        isPlayerTurn = !isPlayerTurn;
+        OnTurnChanged?.Invoke(isPlayerTurn);
+        board.SetPlayerInputEnabled(isPlayerTurn);
+        StartTurnTimer();
+
+        if (enableAI && !isPlayerTurn)
+            yield return CallAI();
+
+        _endingTurn = false;
+    }
+
     void ClampActor(Actor a)
     {
-        // ... (Giữ nguyên code của bạn) ...
         a.maxHP = Mathf.Max(1, a.maxHP);
         a.maxMana = Mathf.Max(0, a.maxMana);
         a.maxRage = Mathf.Max(0, a.maxRage);
@@ -250,30 +367,20 @@ public class BattleManager : MonoBehaviour
     }
 
     bool IsDead(Actor a) => a.hp <= 0;
-    // ================== HÀM DÙNG THẺ (MỚI) ==================
-    // (Các hàm này sẽ được gọi bởi BattleCardManager ở Bước 3)
 
-    /// <summary>
-    /// Được gọi bởi Nút UI của Thẻ Mana (từ CardData.cs)
-    /// </summary>
+    // ================== HÀM DÙNG THẺ (GIỮ NGUYÊN) ==================
     public void UseManaCard(int amount)
     {
-        // Chỉ cho dùng khi đến lượt Player
         if (!isPlayerTurn) { OnCombatLog?.Invoke("Chưa tới lượt!"); return; }
         if (playerPet == null) return;
 
         var player = playerPet.GetActor();
         player.GainMana(amount);
         ClampActor(player);
-
-        // Cập nhật HUD
         OnStatsChanged?.Invoke(player, enemyPet.GetActor());
         OnCombatLog?.Invoke($"Player dùng thẻ, +{amount} Mana");
     }
 
-    /// <summary>
-    /// Được gọi bởi Nút UI của Thẻ Rage (từ CardData.cs)
-    /// </summary>
     public void UseRageCard(int amount)
     {
         if (!isPlayerTurn) { OnCombatLog?.Invoke("Chưa tới lượt!"); return; }
@@ -282,15 +389,10 @@ public class BattleManager : MonoBehaviour
         var player = playerPet.GetActor();
         player.GainRage(amount);
         ClampActor(player);
-
-        // Cập nhật HUD
         OnStatsChanged?.Invoke(player, enemyPet.GetActor());
         OnCombatLog?.Invoke($"Player dùng thẻ, +{amount} Rage");
     }
 
-    /// <summary>
-    /// Được gọi bởi Nút UI của Thẻ Skill (từ CardData.cs)
-    /// </summary>
     public void UseSkillCard(string skillID)
     {
         if (!isPlayerTurn) { OnCombatLog?.Invoke("Chưa tới lượt!"); return; }
@@ -299,40 +401,36 @@ public class BattleManager : MonoBehaviour
         var player = playerPet.GetActor();
         var enemy = enemyPet.GetActor();
 
-        // --- LOGIC SKILL GIẢ LẬP (SAU NÀY SẼ THAY BẰNG DATABASE) ---
         int manaCost = 0;
         int damage = 0;
 
-        if (skillID == "Punch") //
+        if (skillID == "Punch")
         {
-            manaCost = 30; // Ví dụ: Skill "Punch" tốn 30 Mana
-            damage = 75;   // Ví dụ: Skill "Punch" gây 75 Sát thương
+            manaCost = 40;
+            damage = 30;
         }
         else
         {
             OnCombatLog?.Invoke($"Không biết skill ID: {skillID}");
             return;
         }
-        // --- KẾT THÚC GIẢ LẬP ---
 
-        // 1. Kiểm tra Mana
         if (player.mana < manaCost)
         {
             OnCombatLog?.Invoke("Không đủ Mana!");
             return;
         }
 
-        // 2. Trừ Mana
         player.DrainMana(manaCost);
         OnCombatLog?.Invoke($"Player dùng {skillID}, -{manaCost} Mana");
-
-        // 3. Gây hiệu ứng (ví dụ: gây sát thương)
         enemy.TakeDamage(damage);
         OnCombatLog?.Invoke($"Gây {damage} sát thương lên {enemy.id}!");
 
-        // 4. Cập nhật HUD
         ClampActor(player);
         ClampActor(enemy);
         OnStatsChanged?.Invoke(player, enemy);
     }
+
+    public float GetRemainingTime() => currentTurnTime;
+    public float GetTimePercent() => turnTimeLimit > 0 ? currentTurnTime / turnTimeLimit : 1f;
 }
