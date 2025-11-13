@@ -1,38 +1,60 @@
 ﻿using UnityEngine;
-using UnityEngine.SceneManagement; // <-- Thêm dòng này để quản lý Scene
-using Firebase.Auth;            // <-- Thêm dòng này để dùng Firebase Auth
+using UnityEngine.SceneManagement;
+using Firebase.Auth;
+using System.Collections;
 
 public class MainMenuManager : MonoBehaviour
 {
     private FirebaseAuth auth;
+    private bool isLoggingOut = false;
 
-    // Hàm Start được gọi khi đối tượng được bật
     void Start()
     {
-        // Khởi tạo và lấy phiên bản FirebaseAuth
         auth = FirebaseAuth.DefaultInstance;
+
+        if (auth.CurrentUser == null)
+        {
+            SceneManager.LoadScene("LoginScene");
+            return;
+        }
+        Debug.Log($"✓ MainMenu: Logged in as {auth.CurrentUser.Email}");
     }
 
-    // Đây là hàm public mà chúng ta sẽ gọi từ nút
     public void HandleLogout()
     {
-        // Kiểm tra xem có người dùng nào đang đăng nhập không
-        if (auth.CurrentUser != null)
-        {
-            Debug.Log($"Đang đăng xuất: {auth.CurrentUser.Email}");
+        if (isLoggingOut) return;
+        StartCoroutine(LogoutCoroutine());
+    }
 
-            // Lệnh đăng xuất
+    private IEnumerator LogoutCoroutine()
+    {
+        isLoggingOut = true;
+        Debug.Log("Processing Logout...");
+
+        if (auth != null)
+        {
             auth.SignOut();
 
-            // Quay trở lại cảnh LoginScene
-            // (Hãy chắc chắn rằng "LoginScene" là tên chính xác của file scene đăng nhập của bạn)
-            SceneManager.LoadScene("LoginScene");
+            // --- QUAN TRỌNG: Reset dữ liệu của Singleton để lần sau đăng nhập lại được ---
+            if (IslandProgressManager.Instance != null)
+            {
+                IslandProgressManager.Instance.ResetData();
+            }
+            // ---------------------------------------------------------------------------
         }
-        else
-        {
-            Debug.LogWarning("Không có ai để đăng xuất, đã ở LoginScene.");
-            // Đề phòng trường hợp lỗi, vẫn quay về LoginScene
-            SceneManager.LoadScene("LoginScene");
-        }
+
+        // Xóa lưu trữ tạm
+        PlayerPrefs.DeleteKey("RegisteredEmail");
+        PlayerPrefs.Save();
+
+        yield return new WaitForSeconds(0.2f);
+
+        Debug.Log("→ Returning to LoginScene");
+        SceneManager.LoadScene("LoginScene");
+    }
+
+    void OnDestroy()
+    {
+        isLoggingOut = false;
     }
 }

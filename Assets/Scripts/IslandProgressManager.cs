@@ -12,11 +12,12 @@ public class IslandProgressManager : MonoBehaviour
     private FirebaseAuth auth;
     private FirebaseFirestore db;
 
-    // Bộ đệm (cache) để lưu dữ liệu đã tải về
+    // Bộ đệm (cache)
     private Dictionary<string, bool> islandUnlockStatus = new Dictionary<string, bool>();
 
     public bool IsDataLoaded { get; private set; } = false;
     private bool isLoadingData = false;
+    private bool isFirebaseInitialized = false; // Cờ kiểm tra đã khởi tạo chưa
 
     public static event Action OnDataLoaded;
 
@@ -25,7 +26,8 @@ public class IslandProgressManager : MonoBehaviour
         if (Instance == null)
         {
             Instance = this;
-            DontDestroyOnLoad(gameObject);
+            DontDestroyOnLoad(gameObject); // Giữ object này sống qua các scene
+            Debug.Log("=== IslandProgressManager Created ===");
         }
         else
         {
@@ -33,48 +35,75 @@ public class IslandProgressManager : MonoBehaviour
         }
     }
 
-    void Start()
+    // --- HÀM MỚI: Xóa sạch dữ liệu cũ (Dùng khi Logout hoặc vào lại LoginScene) ---
+    public void ResetData()
     {
-        auth = FirebaseAuth.DefaultInstance;
-        auth.StateChanged += OnAuthStateChanged;
-        db = FirebaseFirestore.DefaultInstance;
+        Debug.Log("[ProgressManager] 🧹 Resetting Data...");
+        islandUnlockStatus.Clear();
+        IsDataLoaded = false;
+        isLoadingData = false; // Mở khóa để cho phép lần đăng nhập tiếp theo chạy
+    }
+    // --------------------------------------------------------------------------
 
-        if (auth.CurrentUser != null)
+    // Hàm này được gọi từ FirebaseAuthManager
+    public void Initialize()
+    {
+        if (isFirebaseInitialized) return;
+
+        Debug.Log("[ProgressManager] 🔧 Initializing manually...");
+        try
         {
-            _ = LoadIslandProgressAsync(auth.CurrentUser.UserId);
+            auth = FirebaseAuth.DefaultInstance;
+            db = FirebaseFirestore.DefaultInstance;
+
+            auth.StateChanged += OnAuthStateChanged;
+            isFirebaseInitialized = true;
+
+            Debug.Log("[ProgressManager] ✓ Firebase Dependencies OK via Manager");
+
+            // Nếu user đã login sẵn (trường hợp reload)
+            if (auth.CurrentUser != null)
+            {
+                _ = LoadIslandProgressAsync(auth.CurrentUser.UserId);
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[ProgressManager] ❌ Init Error: {e.Message}");
         }
     }
 
     private void OnAuthStateChanged(object sender, EventArgs eventArgs)
     {
-        if (auth.CurrentUser != null)
+        if (!isFirebaseInitialized) return;
+
+        if (auth.CurrentUser == null)
         {
-            _ = LoadIslandProgressAsync(auth.CurrentUser.UserId);
-        }
-        else
-        {
-            islandUnlockStatus.Clear();
-            IsDataLoaded = false;
+            // Khi logout thì xóa cache
+            ResetData();
         }
     }
 
-    // Hàm tải dữ liệu từ Firestore về cache
     public async Task LoadIslandProgressAsync(string userId)
     {
-        if (isLoadingData) return;
+        if (!isFirebaseInitialized || db == null || string.IsNullOrEmpty(userId)) return;
+
+        // Reset cờ loading nếu nó bị treo quá lâu (phòng hờ)
+        if (isLoadingData)
+        {
+            Debug.LogWarning("[ProgressManager] ⚠️ Đang tải dữ liệu, bỏ qua lệnh gọi trùng.");
+            return;
+        }
 
         isLoadingData = true;
         IsDataLoaded = false;
 
-        // THÊM TRY-CATCH ĐỂ BẮT LỖI
+        Debug.Log($"[ProgressManager] 📥 Loading data for: {userId}");
+
         try
         {
             DocumentReference userDocRef = db.Collection("users").Document(userId);
-            Debug.Log($"[ProgressManager] Bắt đầu tải data cho user: users/{userId}");
-
             var snapshot = await userDocRef.GetSnapshotAsync();
-
-            isLoadingData = false;
 
             if (snapshot.Exists && snapshot.TryGetValue("islandProgress", out object islandDataObj))
             {
@@ -83,65 +112,62 @@ public class IslandProgressManager : MonoBehaviour
 
                 if (islandDataMap != null)
                 {
-                    Debug.Log("[ProgressManager] Đã tìm thấy data, đang đọc vào bộ đệm...");
                     foreach (var pair in islandDataMap)
                     {
                         islandUnlockStatus[pair.Key] = (bool)pair.Value;
-
-                        // THÊM LOG QUAN TRỌNG NÀY ĐỂ XEM DATA ĐỌC VỀ
-                        Debug.Log($"[ProgressManager] Data trong cache: Key='{pair.Key}', Value='{pair.Value}'");
                     }
                 }
-                else
-                {
-                    Debug.LogError("[ProgressManager] Lỗi: Không thể ép kiểu 'islandProgress' về Dictionary!");
-                }
+                Debug.Log($"[ProgressManager] ✅ Loaded {islandUnlockStatus.Count} islands");
             }
             else
             {
-                Debug.LogWarning($"[ProgressManager] Không tìm thấy document cho user {userId}! Đang tạo data mặc định...");
-                await UnlockIslandAsync("FireIsland"); // Tự động unlock đảo đầu tiên
+                Debug.Log("[ProgressManager] ℹ️ New user or no data. Unlocking first island.");
+                await UnlockIslandAsync("FireIsland");
             }
 
             IsDataLoaded = true;
-            Debug.Log("[ProgressManager] Tải data thành công! Đang bắn sự kiện OnDataLoaded...");
-            OnDataLoaded?.Invoke(); // Bắn sự kiện
+            OnDataLoaded?.Invoke();
         }
-        catch (Exception e) // NẾU CÓ LỖI (Mạng, Quyền,...) NÓ SẼ HIỆN Ở ĐÂY
+        catch (Exception e)
         {
-            Debug.LogError($"[ProgressManager] LỖI NGHIÊM TRỌNG KHI TẢI DATA: {e.Message}");
-            isLoadingData = false;
+            Debug.LogError($"[ProgressManager] ❌ Load Error: {e.Message}");
+        }
+        finally
+        {
+            isLoadingData = false; // Luôn mở khóa dù thành công hay thất bại
         }
     }
 
-    // Hàm kiểm tra (đọc từ cache, rất nhanh)
     public bool IsIslandUnlocked(string islandID)
     {
         return islandUnlockStatus.TryGetValue(islandID, out bool unlocked) && unlocked;
     }
 
-    // Hàm mở khóa (ghi đè lên Firebase)
     public async Task UnlockIslandAsync(string islandID)
     {
-        if (auth.CurrentUser == null) return;
+        if (!isFirebaseInitialized || auth.CurrentUser == null) return;
+
         string userId = auth.CurrentUser.UserId;
+        islandUnlockStatus[islandID] = true; // Update cache ngay cho mượt
 
-        // 1. Cập nhật cache
-        islandUnlockStatus[islandID] = true;
-
-        // 2. Cập nhật Firestore
-        DocumentReference userDocRef = db.Collection("users").Document(userId);
-        var dataToMerge = new Dictionary<string, object>
+        try
         {
-            { "islandProgress", new Dictionary<string, object>
-                {
-                    { islandID, true }
-                }
-            }
-        };
+            DocumentReference userDocRef = db.Collection("users").Document(userId);
+            var dataToMerge = new Dictionary<string, object>
+            {
+                { "islandProgress", new Dictionary<string, object> { { islandID, true } } }
+            };
+            await userDocRef.SetAsync(dataToMerge, SetOptions.MergeAll);
+            Debug.Log($"[ProgressManager] 💾 Saved unlock: {islandID}");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[ProgressManager] ❌ Save Error: {e.Message}");
+        }
+    }
 
-        Debug.Log($"Saving to Firestore: islandProgress.{islandID} = true");
-        // Dùng SetAsync + MergeAll để tạo/cập nhật data an toàn
-        await userDocRef.SetAsync(dataToMerge, SetOptions.MergeAll);
+    void OnDestroy()
+    {
+        if (auth != null) auth.StateChanged -= OnAuthStateChanged;
     }
 }
